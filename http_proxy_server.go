@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/google/gitprotocolio"
-	"go.opencensus.io/tag"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -47,11 +46,7 @@ func (s *httpProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer logCloser()
 	reporter := &httpErrorReporter{config: s.config, req: r, w: w}
 
-	ctx, err := tag.New(r.Context(), tag.Insert(CommandTypeKey, "not-a-command"))
-	if err != nil {
-		reporter.reportError(err)
-		return
-	}
+	ctx := withAttrs(r.Context(), CommandTypeKey.String("not-a-command"))
 	r = r.WithContext(ctx)
 
 	// Extract CI-Source

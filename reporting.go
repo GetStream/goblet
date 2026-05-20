@@ -21,8 +21,6 @@ import (
 	"net/http"
 	"time"
 
-	"go.opencensus.io/stats"
-	"go.opencensus.io/tag"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -50,11 +48,8 @@ func (h *httpErrorReporter) reportError(err error) {
 		code = st.Code()
 		message = st.Message()
 	}
-	stats.RecordWithTags(
-		h.req.Context(),
-		[]tag.Mutator{tag.Insert(CommandCanonicalStatusKey, code.String())},
-		InboundCommandCount.M(1),
-	)
+	ctx := h.req.Context()
+	InboundCommandCount.Add(ctx, 1, recordOpts(ctx, CommandCanonicalStatusKey.String(code.String())))
 
 	if code == codes.Unauthenticated {
 		h.w.Header().Add("WWW-Authenticate", "Bearer")
@@ -88,12 +83,9 @@ func (h *gitProtocolHTTPErrorReporter) reportError(ctx context.Context, startTim
 	if st, ok := status.FromError(err); ok {
 		code = st.Code()
 	}
-	stats.RecordWithTags(
-		ctx,
-		[]tag.Mutator{tag.Insert(CommandCanonicalStatusKey, code.String())},
-		InboundCommandCount.M(1),
-		InboundCommandProcessingTime.M(int64(time.Now().Sub(startTime)/time.Millisecond)),
-	)
+	opts := recordOpts(ctx, CommandCanonicalStatusKey.String(code.String()))
+	InboundCommandCount.Add(ctx, 1, opts)
+	InboundCommandProcessingTime.Record(ctx, int64(time.Since(startTime)/time.Millisecond), opts)
 
 	if err != nil {
 		writeError(h.w, err)

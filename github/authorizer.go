@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -15,11 +15,11 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/DataDog/datadog-go/statsd"
-	"github.com/ReneKroon/ttlcache/v2"
+	"github.com/jellydator/ttlcache/v3"
 )
 
 type CacheableAuthorizer struct {
-	cache        *ttlcache.Cache // Set cache to nil to disable caching
+	cache        *ttlcache.Cache[string, bool] // Set cache to nil to disable caching
 	statsdClient *statsd.Client
 }
 
@@ -33,10 +33,12 @@ type CacheMetrics struct {
 
 func NewAuthorizer(enableCache bool, statsdClient *statsd.Client) CacheableAuthorizer {
 	if enableCache {
-		cache := ttlcache.NewCache()
-		cache.SetTTL(time.Duration(15 * time.Minute))
-		cache.SkipTTLExtensionOnHit(true) // set this to true so that TTL won't get extended on cache hit
-		cache.SetCacheSizeLimit(1000 * 1000)
+		cache := ttlcache.New[string, bool](
+			ttlcache.WithTTL[string, bool](15*time.Minute),
+			ttlcache.WithCapacity[string, bool](1_000_000),
+			ttlcache.WithDisableTouchOnHit[string, bool](), // do not extend TTL on cache hit
+		)
+		go cache.Start() // background expiration loop
 		return CacheableAuthorizer{
 			cache:        cache,
 			statsdClient: statsdClient,
@@ -50,7 +52,7 @@ func NewAuthorizer(enableCache bool, statsdClient *statsd.Client) CacheableAutho
 
 func (authorizer CacheableAuthorizer) Close() {
 	if authorizer.cache != nil {
-		authorizer.cache.Close()
+		authorizer.cache.Stop()
 	}
 }
 
@@ -104,15 +106,15 @@ func (authorizer CacheableAuthorizer) isAuthorized(token string, repoURL string)
 	}
 
 	cacheKey := fmt.Sprintf("%s@%s", token, repoURL)
-	if authorized, err := authorizer.cache.Get(cacheKey); err == nil {
+	if item := authorizer.cache.Get(cacheKey); item != nil {
 		// return the cached result. We will lose the original error if any
-		return authorized.(bool), nil
+		return item.Value(), nil
 	}
 
 	authorized, shouldCache, err := isTokenValid(token, repoURL)
 	authorizer.statsdClient.Incr("goblet.operation.count", []string{"op:token_validation"}, 1)
 	if shouldCache {
-		authorizer.cache.Set(cacheKey, authorized)
+		authorizer.cache.Set(cacheKey, authorized, ttlcache.DefaultTTL)
 	}
 
 	return authorized, err
@@ -142,7 +144,7 @@ func isTokenValid(token string, repoURL string) (bool, bool, error) {
 	}
 	defer res.Body.Close()
 
-	resBytes, err := ioutil.ReadAll(res.Body)
+	resBytes, err := io.ReadAll(res.Body)
 	if err != nil {
 		return false, true, err
 	}
@@ -164,13 +166,12 @@ func isTokenValid(token string, repoURL string) (bool, bool, error) {
 func (authorizer CacheableAuthorizer) CacheMetrics() CacheMetrics {
 	var metrics CacheMetrics
 	if authorizer.cache != nil {
-		internalMetrics := authorizer.cache.GetMetrics()
-		// the keys in cache.GetMetrics() are a bit misleading, so we will map them to our own keys
-		metrics.Keys = int64(authorizer.cache.Count())
-		metrics.Hits = internalMetrics.Retrievals
-		metrics.Misses = internalMetrics.Misses
-		metrics.Inserts = internalMetrics.Inserted
-		metrics.Removes = internalMetrics.Evicted
+		internalMetrics := authorizer.cache.Metrics()
+		metrics.Keys = int64(authorizer.cache.Len())
+		metrics.Hits = int64(internalMetrics.Hits)
+		metrics.Misses = int64(internalMetrics.Misses)
+		metrics.Inserts = int64(internalMetrics.Insertions)
+		metrics.Removes = int64(internalMetrics.Evictions)
 	}
 	return metrics
 }

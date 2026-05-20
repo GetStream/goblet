@@ -23,19 +23,27 @@ We took the initial implementation from
 - Added support for caching GitHub repositories, and automatically fetch every 15 minutes.
 - Added support for GitHub Apps as authentication mechanism.
 - Added DataDog for exporting metrics.
-- Remove Bazel. Use pure Go tooling to build and release.
+- Removed Bazel; the project now builds with plain Go tooling and a `Makefile`.
+- Renamed the module path to `github.com/GetStream/goblet`.
+- Bumped to Go 1.26; the Dockerfile build stage uses `golang:1.26-alpine`.
+- Migrated metrics from OpenCensus to OpenTelemetry (OTLP exporter — point it
+  at the local Datadog Agent's OTLP endpoint).
+- Replaced abandoned dependencies: `gopkg.in/square/go-jose.v2` →
+  `github.com/go-jose/go-jose/v4`, `github.com/ReneKroon/ttlcache/v2` →
+  `github.com/jellydator/ttlcache/v3`, `github.com/libgit2/git2go/v33` → `v34`.
 
 ## Usage
-1. Build Goblet
+1. Build Goblet (requires CGO + libgit2 1.5 — see `install_git2go.sh`)
     ```bash
-    bazel build //goblet-server
+    make build
+    # or: go build -o bin/goblet-server ./goblet-server
     ```
 2. Start the Goblet server
     ```bash
     export GH_APP_ID="<APP_ID>"
     export GH_APP_INSTALLATION_ID="<APP_INSTALLATION_ID>"
     export GH_APP_PRIVATE_KEY="<APP_PRIVATE_KEY_PEM_TEXT>"
-    bazel-bin/goblet-server/goblet-server_/goblet-server -config "<PATH_TO_CONFIG_FILE>"
+    ./bin/goblet-server -config "<PATH_TO_CONFIG_FILE>"
     ```
 
     See `example_config.json` for how the minimum config file should look like.

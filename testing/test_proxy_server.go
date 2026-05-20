@@ -16,7 +16,6 @@ package testing
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -27,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/canva/goblet"
+	"github.com/GetStream/goblet"
 	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -89,7 +88,7 @@ func NewTestServer(config *TestServerConfig) *TestServer {
 	}
 
 	{
-		dir, err := ioutil.TempDir("", "goblet_cache")
+		dir, err := os.MkdirTemp("", "goblet_cache")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -195,7 +194,7 @@ func TestRequestAuthorizer(r *http.Request) error {
 type GitRepo string
 
 func NewLocalBareGitRepo() GitRepo {
-	dir, err := ioutil.TempDir("", "goblet_tmp")
+	dir, err := os.MkdirTemp("", "goblet_tmp")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -205,7 +204,7 @@ func NewLocalBareGitRepo() GitRepo {
 }
 
 func NewLocalGitRepo() GitRepo {
-	dir, err := ioutil.TempDir("", "goblet_tmp")
+	dir, err := os.MkdirTemp("", "goblet_tmp")
 	if err != nil {
 		log.Fatal(err)
 	}

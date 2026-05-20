@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -35,9 +34,8 @@ import (
 	"github.com/DataDog/datadog-go/statsd"
 	"github.com/alitto/pond"
 	"github.com/google/gitprotocolio"
-	git "github.com/libgit2/git2go/v33"
-	"go.opencensus.io/stats"
-	"go.opencensus.io/tag"
+	git "github.com/libgit2/git2go/v34"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -143,14 +141,13 @@ func logStats(command string, startTime time.Time, err error) {
 	if st, ok := status.FromError(err); ok {
 		code = st.Code()
 	}
-	stats.RecordWithTags(context.Background(),
-		[]tag.Mutator{
-			tag.Insert(CommandTypeKey, command),
-			tag.Insert(CommandCanonicalStatusKey, code.String()),
-		},
-		OutboundCommandCount.M(1),
-		OutboundCommandProcessingTime.M(int64(time.Since(startTime)/time.Millisecond)),
+	ctx := context.Background()
+	opts := metric.WithAttributes(
+		CommandTypeKey.String(command),
+		CommandCanonicalStatusKey.String(code.String()),
 	)
+	OutboundCommandCount.Add(ctx, 1, opts)
+	OutboundCommandProcessingTime.Record(ctx, int64(time.Since(startTime)/time.Millisecond), opts)
 }
 
 func logElapsed(operation string, startTime time.Time, threshold time.Duration, localDiskPath string) {
@@ -202,12 +199,12 @@ func (r *managedRepository) lsRefsUpstream(command []*gitprotocolio.ProtocolV2Re
 	if resp.StatusCode != http.StatusOK {
 		errMessage := ""
 		if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain") {
-			bs, err := ioutil.ReadAll(resp.Body)
+			bs, err := io.ReadAll(resp.Body)
 			if err == nil {
 				errMessage = string(bs)
 			}
 		}
-		errData, _ := ioutil.ReadAll(resp.Body)
+		errData, _ := io.ReadAll(resp.Body)
 		errMessage = string(errData)
 		return nil, fmt.Errorf("got a non-OK response from the upstream: %v %s", resp.StatusCode, errMessage)
 	}

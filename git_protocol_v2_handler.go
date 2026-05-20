@@ -23,9 +23,7 @@ import (
 	"time"
 
 	"github.com/google/gitprotocolio"
-	git "github.com/libgit2/git2go/v33"
-	"go.opencensus.io/stats"
-	"go.opencensus.io/tag"
+	git "github.com/libgit2/git2go/v34"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -36,29 +34,16 @@ type gitProtocolErrorReporter interface {
 
 func handleV2Command(ctx context.Context, reporter gitProtocolErrorReporter, repo *managedRepository, command []*gitprotocolio.ProtocolV2RequestChunk, w io.Writer, ci_source string) bool {
 	startTime := time.Now()
-	var err error
-	ctx, err = tag.New(ctx, tag.Upsert(CommandTypeKey, command[0].Command))
-	if err != nil {
-		reporter.reportError(ctx, startTime, err)
-		return false
-	}
-
-	cacheState := "locally-served"
-	ctx, err = tag.New(ctx, tag.Upsert(CommandCacheStateKey, cacheState))
-	if err != nil {
-		reporter.reportError(ctx, startTime, err)
-		return false
-	}
+	ctx = withAttrs(ctx,
+		CommandTypeKey.String(command[0].Command),
+		CommandCacheStateKey.String("locally-served"),
+	)
 
 	logV2Request(command, repo)
 
 	switch command[0].Command {
 	case "ls-refs":
-		ctx, err = tag.New(ctx, tag.Update(CommandCacheStateKey, "queried-upstream"))
-		if err != nil {
-			reporter.reportError(ctx, startTime, err)
-			return false
-		}
+		ctx = withAttrs(ctx, CommandCacheStateKey.String("queried-upstream"))
 
 		resp, err := repo.lsRefsUpstream(command)
 		if err != nil {
@@ -106,11 +91,7 @@ func handleV2Command(ctx context.Context, reporter gitProtocolErrorReporter, rep
 			reporter.reportError(ctx, startTime, err)
 			return false
 		} else if !hasAllWants {
-			ctx, err = tag.New(ctx, tag.Update(CommandCacheStateKey, "queried-upsteam"))
-			if err != nil {
-				reporter.reportError(ctx, startTime, err)
-				return false
-			}
+			ctx = withAttrs(ctx, CommandCacheStateKey.String("queried-upstream"))
 
 			fetchStartTime := time.Now()
 			repo.fetchUpstreamPool.SubmitAndWait(func() {
@@ -145,7 +126,7 @@ func handleV2Command(ctx context.Context, reporter gitProtocolErrorReporter, rep
 					return false
 				}
 			}
-			stats.Record(ctx, UpstreamFetchWaitingTime.M(int64(time.Since(fetchStartTime)/time.Millisecond)))
+			UpstreamFetchWaitingTime.Record(ctx, int64(time.Since(fetchStartTime)/time.Millisecond), recordOpts(ctx))
 		}
 
 		errorChan := make(chan error, 1)

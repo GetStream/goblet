@@ -4,8 +4,8 @@
 # GoReleaser
 dist/
 
-# Bazel generated folders.
-/bazel-*
+# Build output
+/bin/
 
 # IntelliJ files
 .idea/
