@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/google/gitprotocolio"
-	git "github.com/libgit2/git2go/v34"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -168,8 +168,8 @@ func generateV2RequestMetricTags(chunks []*gitprotocolio.ProtocolV2RequestChunk,
 	return tags
 }
 
-func parseLsRefsResponse(chunks []*gitprotocolio.ProtocolV2ResponseChunk) (map[string]git.Oid, error) {
-	m := map[string]git.Oid{}
+func parseLsRefsResponse(chunks []*gitprotocolio.ProtocolV2ResponseChunk) (map[string]plumbing.Hash, error) {
+	m := map[string]plumbing.Hash{}
 	for _, ch := range chunks {
 		if ch.Response == nil {
 			continue
@@ -178,17 +178,17 @@ func parseLsRefsResponse(chunks []*gitprotocolio.ProtocolV2ResponseChunk) (map[s
 		if len(ss) < 2 {
 			return nil, status.Errorf(codes.Internal, "cannot parse the upstream ls-refs response: got %d component, want at least 2", len(ss))
 		}
-		hash, err := git.NewOid(ss[0])
+		hash, err := parseHash(ss[0])
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "cannot parse the upstream ls-refs response: got invalid hash %s", ss[0])
 		}
-		m[strings.TrimSpace(ss[1])] = *hash
+		m[strings.TrimSpace(ss[1])] = hash
 	}
 	return m, nil
 }
 
-func parseFetchWants(chunks []*gitprotocolio.ProtocolV2RequestChunk) ([]git.Oid, []string, error) {
-	hashes := []git.Oid{}
+func parseFetchWants(chunks []*gitprotocolio.ProtocolV2RequestChunk) ([]plumbing.Hash, []string, error) {
+	hashes := []plumbing.Hash{}
 	refs := []string{}
 	for _, ch := range chunks {
 		if ch.Argument == nil {
@@ -200,11 +200,11 @@ func parseFetchWants(chunks []*gitprotocolio.ProtocolV2RequestChunk) ([]git.Oid,
 			if len(ss) < 2 {
 				return nil, nil, status.Errorf(codes.InvalidArgument, "cannot parse the fetch request: got %d component, want at least 2", len(ss))
 			}
-			hash, err := git.NewOid(strings.TrimSpace(ss[1]))
+			hash, err := parseHash(strings.TrimSpace(ss[1]))
 			if err != nil {
 				return nil, nil, status.Errorf(codes.InvalidArgument, "cannot parse the upstream ls-refs response: got invalid hash %s", strings.TrimSpace(ss[1]))
 			}
-			hashes = append(hashes, *hash)
+			hashes = append(hashes, hash)
 		} else if strings.HasPrefix(s, "want-ref ") {
 			ss := strings.Split(s, " ")
 			if len(ss) < 2 {

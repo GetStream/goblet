@@ -4,6 +4,6 @@
   "token_expiry_delta_seconds": 300,
   "enable_metrics": true,
   "repositories": [
-    "https://github.com/canva/goblet.git"
+    "https://github.com/GetStream/goblet.git"
   ]
 }

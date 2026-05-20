@@ -30,10 +30,12 @@ We took the initial implementation from
   at the local Datadog Agent's OTLP endpoint).
 - Replaced abandoned dependencies: `gopkg.in/square/go-jose.v2` →
   `github.com/go-jose/go-jose/v4`, `github.com/ReneKroon/ttlcache/v2` →
-  `github.com/jellydator/ttlcache/v3`, `github.com/libgit2/git2go/v33` → `v34`.
+  `github.com/jellydator/ttlcache/v3`.
+- Replaced `libgit2`/`git2go` (CGO) with pure-Go `github.com/go-git/go-git/v5`
+  — no native libgit2 dependency, no CGO required to build.
 
 ## Usage
-1. Build Goblet (requires CGO + libgit2 1.5 — see `install_git2go.sh`)
+1. Build Goblet (pure Go, no CGO required)
     ```bash
     make build
     # or: go build -o bin/goblet-server ./goblet-server
