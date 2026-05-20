@@ -33,13 +33,34 @@ import (
 
 	"github.com/DataDog/datadog-go/statsd"
 	"github.com/alitto/pond"
+	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/google/gitprotocolio"
-	git "github.com/libgit2/git2go/v34"
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// parseHash converts a hex SHA-1 string into a plumbing.Hash, validating the
+// length and hex digits. plumbing.NewHash silently produces a zero-padded
+// hash on bad input, so we validate explicitly.
+func parseHash(s string) (plumbing.Hash, error) {
+	s = strings.TrimSpace(s)
+	if len(s) != 40 {
+		return plumbing.ZeroHash, fmt.Errorf("invalid hash length: %q", s)
+	}
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		case c >= 'A' && c <= 'F':
+		default:
+			return plumbing.ZeroHash, fmt.Errorf("invalid hash: %q", s)
+		}
+	}
+	return plumbing.NewHash(s), nil
+}
 
 var (
 	gitBinary string
@@ -220,7 +241,7 @@ func (r *managedRepository) lsRefsUpstream(command []*gitprotocolio.ProtocolV2Re
 	return chunks, nil
 }
 
-func (r *managedRepository) fetchUpstream(additionalWants []git.Oid) (err error) {
+func (r *managedRepository) fetchUpstream(additionalWants []plumbing.Hash) (err error) {
 	var t *oauth2.Token
 	lockTime := time.Now()
 	r.mu.Lock()
@@ -262,7 +283,7 @@ func (r *managedRepository) fetchUpstream(additionalWants []git.Oid) (err error)
 }
 
 // This function should not be called directly, call fetchUpstream() instead
-func (r *managedRepository) fetchUpstreamInternal(remote string, token *oauth2.Token, additionalWants []git.Oid) error {
+func (r *managedRepository) fetchUpstreamInternal(remote string, token *oauth2.Token, additionalWants []plumbing.Hash) error {
 	args := make([]string, 0)
 
 	// git options
@@ -336,7 +357,7 @@ func (r *managedRepository) WriteBundle(w io.Writer) (err error) {
 	return
 }
 
-func (r *managedRepository) hasAnyUpdate(refs map[string]git.Oid) (bool, error) {
+func (r *managedRepository) hasAnyUpdate(refs map[string]plumbing.Hash) (bool, error) {
 	var err error
 	startTime := time.Now()
 	defer logStats("hasAnyUpdate", startTime, err)
@@ -344,30 +365,25 @@ func (r *managedRepository) hasAnyUpdate(refs map[string]git.Oid) (bool, error) 
 
 	log.Printf("Comparing refs of %d\n", len(refs))
 
-	repo, err := git.OpenRepository(r.localDiskPath)
+	repo, err := gogit.PlainOpen(r.localDiskPath)
 	if err != nil {
 		return false, fmt.Errorf("cannot open the local cached repository: %v", err)
 	}
 
-	odb, err := repo.Odb()
-	if err != nil {
-		return false, fmt.Errorf("cannot open odb: %v", err)
-	}
-
 	for refName, expectedHash := range refs {
 		ref, err := lookupReference(repo, refName, true)
-		if err == ErrReferenceNotFound {
+		if errors.Is(err, ErrReferenceNotFound) {
 			return true, nil
 		} else if err != nil {
 			return false, fmt.Errorf("cannot open the reference: %v", err)
 		}
-		if *ref.Target() != expectedHash {
-			if odb.Exists(&expectedHash) {
+		if ref.Hash() != expectedHash {
+			if repo.Storer.HasEncodedObject(expectedHash) == nil {
 				// If the expectedHash exists in local repo, it means the local repo is actually ahead of the refs pair
 				// In this case, hasAnyUpdate should return false and FetchUpstream is not necessary.
-				log.Printf("Comparing and hash not matched but exists %s %s %s\n", refName, expectedHash.String(), ref.Target().String())
+				log.Printf("Comparing and hash not matched but exists %s %s %s\n", refName, expectedHash.String(), ref.Hash().String())
 			} else {
-				log.Printf("Comparing and hash not matched %s %s %s\n", refName, expectedHash.String(), ref.Target().String())
+				log.Printf("Comparing and hash not matched %s %s %s\n", refName, expectedHash.String(), ref.Hash().String())
 				return true, nil
 			}
 		}
@@ -375,7 +391,7 @@ func (r *managedRepository) hasAnyUpdate(refs map[string]git.Oid) (bool, error) 
 	return false, nil
 }
 
-func (r *managedRepository) hasAllWants(hashes []git.Oid, refs []string) (bool, error) {
+func (r *managedRepository) hasAllWants(hashes []plumbing.Hash, refs []string) (bool, error) {
 	var err error
 	startTime := time.Now()
 	defer logStats("hasAllWants", startTime, err)
@@ -383,27 +399,21 @@ func (r *managedRepository) hasAllWants(hashes []git.Oid, refs []string) (bool, 
 
 	log.Printf("Searching hashes of %d and refs of %d\n", len(hashes), len(refs))
 
-	repo, err := git.OpenRepository(r.localDiskPath)
+	repo, err := gogit.PlainOpen(r.localDiskPath)
 	if err != nil {
 		return false, fmt.Errorf("cannot open the local cached repository: %v", err)
 	}
 
-	odb, err := repo.Odb()
-	if err != nil {
-		return false, fmt.Errorf("cannot open odb: %v", err)
-	}
-
 	for _, hash := range hashes {
-		if !odb.Exists(&hash) {
+		if repo.Storer.HasEncodedObject(hash) != nil {
 			log.Printf("Searching hash and not found %s\n", hash.String())
 			return false, nil
-		} else {
-			log.Printf("Searching hash and found %s\n", hash.String())
 		}
+		log.Printf("Searching hash and found %s\n", hash.String())
 	}
 
 	for _, refName := range refs {
-		if _, err := lookupReference(repo, refName, true); err == ErrReferenceNotFound {
+		if _, err := lookupReference(repo, refName, true); errors.Is(err, ErrReferenceNotFound) {
 			return false, nil
 		} else if err != nil {
 			return false, fmt.Errorf("error while looking up a reference for want check: %v", err)
@@ -466,24 +476,17 @@ func (r *managedRepository) startOperation(op string) RunningOperation {
 	return noopOperation{}
 }
 
-func lookupReference(repo *git.Repository, refName string, resolve bool) (*git.Reference, error) {
-	if valid, _ := git.ReferenceNameIsValid(refName); !valid {
+func lookupReference(repo *gogit.Repository, refName string, resolve bool) (*plumbing.Reference, error) {
+	name := plumbing.ReferenceName(refName)
+	if err := name.Validate(); err != nil {
 		log.Printf("Searching ref and got invalid ref %s\n", refName)
 		return nil, ErrReferenceInvalid
 	}
 
-	ref, err := repo.References.Lookup(refName)
+	ref, err := repo.Reference(name, resolve)
 	if err != nil {
 		log.Printf("Searching ref and not found %s %v\n", refName, err)
 		return nil, ErrReferenceNotFound
-	}
-
-	if resolve {
-		ref, err = ref.Resolve()
-		if err != nil {
-			log.Printf("Searching ref and not resolved %s %v\n", refName, err)
-			return nil, ErrReferenceNotFound
-		}
 	}
 
 	return ref, nil
