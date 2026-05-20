@@ -18,7 +18,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/canva/goblet"
+	"github.com/GetStream/goblet"
 )
 
 func URLCanonicalizer(u *url.URL) (*url.URL, error) {

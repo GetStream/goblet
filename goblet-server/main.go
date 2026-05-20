@@ -16,6 +16,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -27,77 +28,53 @@ import (
 	"os"
 	"time"
 
-	datadog "github.com/DataDog/opencensus-go-exporter-datadog"
-	"github.com/canva/goblet"
-	"github.com/canva/goblet/github"
-	"go.opencensus.io/stats/view"
-	"go.opencensus.io/tag"
+	"github.com/GetStream/goblet"
+	"github.com/GetStream/goblet/github"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
 var (
 	config      = flag.String("config", "", "Path to Goblet's configuration file")
 	checkConfig = flag.Bool("check", false, "Only checking if the config is valid, then exit")
 
-	latencyDistributionAggregation = view.Distribution(
-		100,
-		200,
-		400,
-		800,
-		1000, // 1s
-		2000,
-		4000,
-		8000,
-		10000, // 10s
-		20000,
-		40000,
-		80000,
-		100000, // 100s
-		200000,
-		400000,
-		800000,
-		1000000, // 1000s
-		2000000,
-		4000000,
-		8000000,
-	)
-
-	views = []*view.View{
-		{
-			Name:        "github.com/google/goblet/inbound-command-count",
-			Description: "Inbound command count",
-			TagKeys:     []tag.Key{goblet.CommandTypeKey, goblet.CommandCanonicalStatusKey, goblet.CommandCacheStateKey},
-			Measure:     goblet.InboundCommandCount,
-			Aggregation: view.Count(),
-		},
-		{
-			Name:        "github.com/google/goblet/inbound-command-latency",
-			Description: "Inbound command latency",
-			TagKeys:     []tag.Key{goblet.CommandTypeKey, goblet.CommandCanonicalStatusKey, goblet.CommandCacheStateKey},
-			Measure:     goblet.InboundCommandProcessingTime,
-			Aggregation: latencyDistributionAggregation,
-		},
-		{
-			Name:        "github.com/google/goblet/outbound-command-count",
-			Description: "Outbound command count",
-			TagKeys:     []tag.Key{goblet.CommandTypeKey, goblet.CommandCanonicalStatusKey},
-			Measure:     goblet.OutboundCommandCount,
-			Aggregation: view.Count(),
-		},
-		{
-			Name:        "github.com/google/goblet/outbound-command-latency",
-			Description: "Outbound command latency",
-			TagKeys:     []tag.Key{goblet.CommandTypeKey, goblet.CommandCanonicalStatusKey},
-			Measure:     goblet.OutboundCommandProcessingTime,
-			Aggregation: latencyDistributionAggregation,
-		},
-		{
-			Name:        "github.com/google/goblet/upstream-fetch-blocking-time",
-			Description: "Duration that requests are waiting for git-fetch from the upstream",
-			Measure:     goblet.UpstreamFetchWaitingTime,
-			Aggregation: latencyDistributionAggregation,
-		},
+	// latencyBoundaries (ms) used for goblet.*_processing_time / fetch_waiting_time histograms.
+	latencyBoundaries = []float64{
+		100, 200, 400, 800,
+		1000, 2000, 4000, 8000,
+		10000, 20000, 40000, 80000,
+		100000, 200000, 400000, 800000,
+		1000000, 2000000, 4000000, 8000000,
 	}
 )
+
+// initMeterProvider wires the OTLP gRPC metrics exporter (defaults to the
+// local Datadog Agent's OTLP endpoint) and installs histogram buckets that
+// match the previous OpenCensus configuration. The returned shutdown
+// function must be called before the program exits.
+func initMeterProvider(ctx context.Context) (func(context.Context) error, error) {
+	exp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithInsecure())
+	if err != nil {
+		return nil, fmt.Errorf("create OTLP metric exporter: %w", err)
+	}
+
+	histogramView := sdkmetric.NewView(
+		sdkmetric.Instrument{Kind: sdkmetric.InstrumentKindHistogram},
+		sdkmetric.Stream{
+			Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+				Boundaries: latencyBoundaries,
+			},
+		},
+	)
+
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
+		sdkmetric.WithView(histogramView),
+	)
+	otel.SetMeterProvider(mp)
+	return mp.Shutdown, nil
+}
 
 func FetchRepositories(config *goblet.ServerConfig, repositories []string, mustFetch bool) []error {
 	errorChans := make([]chan error, 0, len(repositories))
@@ -138,10 +115,6 @@ func main() {
 	if *checkConfig {
 		fmt.Println("Config is valid")
 		return
-	}
-
-	if err := view.Register(views...); err != nil {
-		log.Fatal(err)
 	}
 
 	var er = func(r *http.Request, err error) {
@@ -188,15 +161,16 @@ func main() {
 	}
 
 	if configFile.EnableMetrics {
-		log.Println("Initializing Datadog exporter...")
-		dd, err := datadog.NewExporter(datadog.Options{})
+		log.Println("Initializing OTLP metrics exporter...")
+		shutdown, err := initMeterProvider(context.Background())
 		if err != nil {
-			log.Fatalf("Failed to create the Datadog exporter: %v", err)
+			log.Fatalf("Failed to initialize the OTLP metrics exporter: %v", err)
 		}
-		// It is imperative to invoke flush before your main function exits
-		defer dd.Stop()
-
-		view.RegisterExporter(dd)
+		defer func() {
+			if err := shutdown(context.Background()); err != nil {
+				log.Printf("OTLP metrics shutdown: %v", err)
+			}
+		}()
 	}
 
 	if configFile.PackObjectsHook != "" {

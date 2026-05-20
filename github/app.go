@@ -19,13 +19,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"golang.org/x/oauth2"
-	"gopkg.in/square/go-jose.v2"
-	"gopkg.in/square/go-jose.v2/jwt"
 )
 
 // GenerateOAuthTokenFromApp generates a GitHub OAuth access token from a set of valid GitHub App credentials. The
@@ -61,7 +61,7 @@ func getInstallationAccessToken(jwt string, installationID string) (oauth2.Token
 	}
 	defer func() { _ = res.Body.Close() }()
 
-	resBytes, err := ioutil.ReadAll(res.Body)
+	resBytes, err := io.ReadAll(res.Body)
 	if err != nil {
 		return oauth2.Token{}, err
 	}
@@ -111,7 +111,7 @@ func generateAppJWT(appID string, now time.Time, privateKey *rsa.PrivateKey) (st
 		Expiry: jwt.NewNumericDate(now.Add(time.Duration(5) * time.Minute)),
 	}
 
-	token, err := jwt.Signed(signer).Claims(claims).CompactSerialize()
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
 	if err != nil {
 		return "", err
 	}
